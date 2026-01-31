@@ -1,721 +1,578 @@
-"""
-Main module for the Space Invaders game using Pygame.
-"""
-
+import pygame
+import random
+from pygame.locals import *
+import asyncio 
 import sys
 
-from pygame import sprite, transform, mixer, time, Surface, font, K_RIGHT, K_LEFT, display, image, \
-    event, KEYUP, KEYDOWN, K_ESCAPE, K_SPACE, QUIT, init, key
+class GAME:
+    SPACESHIP_SPEED = 300.0 # spaceship speed
+    INVICIBILITY_DURATION = 1000  # invincibility duration in milliseconds when hit
+    BOOST_DURATION = 500  # boost duration in milliseconds
 
-from os.path import abspath, dirname
-from random import choice
-import asyncio
+    SPEED_MISSILE = 600.0 # missile speed
+    
+    SPEED_NUCLEAR = 200.0 # radius growth per second of the nuclear bomb
+    NUCLEAR_MAX_RADIUS = 300 # maximum radius of the nuclear bomb
+    
+    SPEED_ENEMIES = 100.0 # enemy speed
+    ENEMIES_FREQUENCY = 2000  # milliseconds
+    
+    ENEMY_BULLET_SPEED = 175.0
+    ENEMY_BALLS_SPEED = 100.0
+    BALLS_DURATION = 5000  # milliseconds
+    
+    ENEMIES_MISSILES_PROBABILITY = 0.5  # probability per second (≈0.002 per frame at 60 FPS)
+    ENEMIES_BALLS_PROBABILITY = 0.2  # probability per second (≈0.001 per frame at 60 FPS) 
 
-BASE_PATH = abspath(dirname(__file__))
-FONT_PATH = BASE_PATH + "/fonts/"
-IMAGE_PATH = BASE_PATH + "/images/"
-SOUND_PATH = BASE_PATH + "/sounds/"
-SOUND_FORMAT = "ogg"
+    BONUS_DURATION = 5000  # bonus appearance duration in milliseconds
+    BONUS_PROBABILITY = 0.1  # probability of bonus per enemy death
+    
+    MAX_LIVES = 5  # maximum number of lives
+    START_CONFIG = (5, 3, 1)  # starting lives, boosts, nuclear bombs
 
+    def __init__(self, screen, img_spaceship_height):
+        self.missiles = []
+        self.nuclear = []
+        self.enemies = []
+        self.enemies_missiles = []
+        self.bonus = []
+        self.spawn_ratio = 1.0
+        self.time_last_enemy = 0
+        self.score = 0
+        self.lives, self.boosts, self.nuclear_bombs = self.START_CONFIG
+        self.spaceship_coord_x = screen.get_width()//2
+        self.spaceship_coord_y = screen.get_height() - img_spaceship_height//2 - 10
+        self.invicibility = None
 
-# Colors (R, G, B)
-WHITE = (255, 255, 255)
-GREEN = (78, 255, 87)
-YELLOW = (241, 255, 0)
-BLUE = (80, 255, 239)
-PURPLE = (203, 0, 255)
-RED = (237, 28, 36)
-ORANGE = (255, 149, 14)
+def display_namebox(screen, font, font_small, screen_width, screen_height, img_background, name_text=""):
+    screen.blit(img_background, (0, 0))
+    screen.blit(font_small.render("Enter your name:", True, (255, 255, 255)), (screen_width//2 - 60, screen_height//2 + 70))
+    rectangle = pygame.Rect(screen_width//2 -60, screen_height//2 + 100, 140, 35)
+    pygame.draw.rect(screen, (255, 255, 255), rectangle, 2)
+    screen.blit(font_small.render(name_text, True, (255, 255, 255)), (screen_width//2 + -50, screen_height//2 + 110))
+    pygame.display.flip()
 
-SCREEN = display.set_mode((800, 600))
-FONT = FONT_PATH + "space_invaders.ttf"
-IMG_NAMES = [
-    "ship",
-    "mystery",
-    "enemy1_1",
-    "enemy1_2",
-    "enemy2_1",
-    "enemy2_2",
-    "enemy3_1",
-    "enemy3_2",
-    "explosionblue",
-    "explosiongreen",
-    "explosionpurple",
-    "laser",
-    "enemylaser" ]
+def display_leaderboard(screen, font, font_small, screen_width, screen_height, leaderboard):
+    leaderboard_text = font.render("Leaderboard (Top Scores):", True, (255, 255, 0))
+    screen.blit(leaderboard_text, (3*screen_width//4 - leaderboard_text.get_width()//2, screen_height//2 + 90))
+    for i, r in enumerate(leaderboard):
+        score_text = font_small.render(str(r[0]) + ": " + r[1], True, (255, 255, 255))
+        screen.blit(score_text, (3*screen_width//4 - score_text.get_width()//2, screen_height//2 + 100 + (i+1)*30))
 
-IMAGES = {
-    name: image.load(IMAGE_PATH + "{}.png".format(name)).convert_alpha()
-    for name in IMG_NAMES
-}
+def display_commands(screen, font, font_small, screen_width, screen_height):
+    command_text = font.render("Controls:", True, (0, 255, 255))
+    screen.blit(command_text, (screen_width//4 - command_text.get_width()//2, screen_height//2 + 90))
+    controls_text = font_small.render("Arrow keys to move", True, (0, 255, 255))
+    screen.blit(controls_text, (screen_width//4 - controls_text.get_width()//2, screen_height//2 + 130))
+    controls_text2 = font_small.render("W to shoot", True, (0, 255, 255))
+    screen.blit(controls_text2, (screen_width//4 - controls_text2.get_width()//2, screen_height//2 + 170))
+    controls_text3 = font_small.render("E for boost", True, (0, 255, 255))
+    screen.blit(controls_text3, (screen_width//4 - controls_text3.get_width()//2, screen_height//2 + 210))
+    controls_text4 = font_small.render("Q for nuclear bomb", True, (0, 255, 255))
+    screen.blit(controls_text4, (screen_width//4 - controls_text4.get_width()//2, screen_height//2 + 250))
 
-BLOCKERS_POSITION = 450
-ENEMY_DEFAULT_POSITION = 65  # Initial value for a new game
-ENEMY_MOVE_DOWN = 35
-DIFFICULTY_LEVEL = 5  # a value between 1 to 10 - number of enemy bullets
+def display_menu(screen, font, font_small, screen_width, screen_height, img_background, leaderboard, score=None):
+    screen.blit(img_background, (0, 0))
+    if score != None:
+        game_over_text = font.render("Game Over! Your final score is: " + str(score), True, (255, 0, 0))
+        screen.blit(game_over_text, (screen_width//2 - game_over_text.get_width()//2, screen_height//4 ))
+        if score == int(leaderboard[0][0]):
+            screen.blit(font.render("New record !", True, (255, 215, 0)), (screen_width//2 - 80, screen_height//4 + 30))
+    display_leaderboard(screen, font, font_small, screen_width, screen_height, leaderboard)
+    display_commands(screen, font, font_small, screen_width, screen_height)
+    pause_text = font.render("Press ENTER to start/restart or ESC to quit.", True, (255, 255, 255))
+    screen.blit(pause_text, (screen_width//2 - pause_text.get_width()//2, screen_height//2 - pause_text.get_height()//2))            
+    pygame.display.flip()
 
+def update_leaderboard(score, leaderboard, name="Anonymous"):
+    leaderboard.append([str(score), name])
+    leaderboard.sort(key=lambda x: int(x[0]), reverse=True)
+    if len(leaderboard) > 5: leaderboard.pop()
+    with open("record_score.txt", "w") as f:
+        for entry in leaderboard:
+            f.write(entry[0] + " " + entry[1] + "\n")
 
-class Ship(sprite.Sprite):
-    def __init__(self):
-        sprite.Sprite.__init__(self)
-        self.image = IMAGES["ship"]
-        self.rect = self.image.get_rect(topleft=(375, 540))
-        self.speed = 5
+async def main():
+    print("Hello c'est Solal ! Bienvenue dans mon jeu.")
 
-    def update(self, keys, *args):
-        if keys[K_LEFT] and self.rect.x > 10:
-            self.rect.x -= self.speed
-        if keys[K_RIGHT] and self.rect.x < 740:
-            self.rect.x += self.speed
-        game.screen.blit(self.image, self.rect)
+    await asyncio.sleep(0)
 
+    # Read the record score from file
+    try:
+        my_file = open("record_score.txt", "r")
+        leaderboard = [[l.split()[0], l.split()[1]] for l in my_file.read().splitlines()]
+        my_file.close()
+    except (FileNotFoundError, ValueError):
+        my_file = open("record_score.txt", "w")
+        my_file.write("0 Anonymous")
+        leaderboard = [[0, "Anonymous"]]
+        my_file.close()
 
-class Bullet(sprite.Sprite):
-    def __init__(self, xpos, ypos, direction, speed, filename, side):
-        sprite.Sprite.__init__(self)
-        self.image = IMAGES[filename]
-        self.rect = self.image.get_rect(topleft=(xpos, ypos))
-        self.speed = speed
-        self.direction = direction
-        self.side = side
-        self.filename = filename
+    # Initialize Pygame
+    pygame.init()
 
-    def update(self, keys, *args):
-        game.screen.blit(self.image, self.rect)
-        self.rect.y += self.speed * self.direction
-        if self.rect.y < 15 or self.rect.y > 600:
-            self.kill()
+    # Set up the game window
+    screen = pygame.display.set_mode((800, 600))
+    pygame.display.set_caption("Hello je suis le createur du jeu, Solal!")
+    screen_height = screen.get_height()
+    screen_width = screen.get_width()   
+    clock = pygame.time.Clock()  # use to cap FPS and get time delta (dt)
 
+    
+    def load_sound(path, vol=0.7):
+        try:
+            s = pygame.mixer.Sound(path)
+            s.set_volume(vol)
+            return s
+        except Exception as e:
+            print(f"Warning: could not load sound {path}: {e}")
+            return None
 
-class Enemy(sprite.Sprite):
-    def __init__(self, row, column):
-        sprite.Sprite.__init__(self)
-        self.row = row
-        self.column = column
-        self.images = []
-        self.load_images()
-        self.index = 0
-        self.image = self.images[self.index]
-        self.rect = self.image.get_rect()
+    def try_load_music(path, vol=0.5, loop=True):
+        try:
+            pygame.mixer.music.load(path)
+            pygame.mixer.music.set_volume(vol)
+            if loop:
+                pygame.mixer.music.play(-1)
+            return True
+        except Exception as e:
+            print(f"Warning: could not load music {path}: {e}")
+            return False
 
-    def toggle_image(self):
-        self.index += 1
-        if self.index >= len(self.images):
-            self.index = 0
-        self.image = self.images[self.index]
+    # load music file
+    try_load_music("sons/musique.wav", 0.5, loop=True)
 
-    def update(self, *args):
-        game.screen.blit(self.image, self.rect)
+    # load sound effects safely
+    son_explosion = load_sound("sons/explosion.wav", 0.7)
+    son_boost = load_sound("sons/boost.wav", 0.7)
+    son_nuclear = load_sound("sons/nuclear.wav", 0.7)
+    son_blaster = []
+    son_blaster.append(load_sound("sons/tir1.wav", 0.3))
+    son_blaster.append(load_sound("sons/tir2.wav", 0.3))
+    
+    # Load fonts
+    font = pygame.font.Font(None, 36)
+    font_small = pygame.font.Font(None, 24)
 
-    def load_images(self):
-        images = {
-            0: ["1_2", "1_1"],
-            1: ["2_2", "2_1"],
-            2: ["2_2", "2_1"],
-            3: ["3_1", "3_2"],
-            4: ["3_1", "3_2"],
-        }
-        img1, img2 = (IMAGES["enemy{}".format(img_num)] for img_num in images[self.row])
-        self.images.append(transform.scale(img1, (40, 35)))
-        self.images.append(transform.scale(img2, (40, 35)))
+    # Load images
+    img_background = pygame.image.load("images/background_1.png").convert()
+    img_background = img_background.subsurface((0, 0, screen_width, screen_height))
+    
+    img_spaceship = pygame.image.load("images/spaceship.png").convert_alpha()
+    img_spaceship = pygame.transform.scale(img_spaceship, (50,50))
+    img_spaceship_width = img_spaceship.get_width()
+    img_spaceship_height = img_spaceship.get_height() 
 
+    img_enemy = [] 
+    img_enemy.append(pygame.image.load("images/enemy1.png").convert_alpha())
+    img_enemy.append(pygame.image.load("images/enemy2.png").convert_alpha())
+    img_enemy.append(pygame.image.load("images/enemy3.png").convert_alpha())
+    img_enemy.append(pygame.image.load("images/enemy4.png").convert_alpha())
+    for i in range(len(img_enemy)):
+        img_enemy[i] = pygame.transform.scale(img_enemy[i], (50,50))
+    img_enemy_width = img_enemy[0].get_width()
+    img_enemy_height = img_enemy[0].get_height()
 
-class EnemiesGroup(sprite.Group):
-    def __init__(self, columns, rows):
-        sprite.Group.__init__(self)
-        self.enemies = [[None] * columns for _ in range(rows)]
-        self.columns = columns
-        self.rows = rows
-        self.leftAddMove = 0
-        self.rightAddMove = 0
-        self.moveTime = 600
-        self.direction = 1
-        self.rightMoves = 30
-        self.leftMoves = 30
-        self.moveNumber = 15
-        self.timer = time.get_ticks()
-        self.bottom = game.enemyPosition + ((rows - 1) * 45) + 35
-        self._aliveColumns = list(range(columns))
-        self._leftAliveColumn = 0
-        self._rightAliveColumn = columns - 1
-
-    def update(self, current_time):
-        if current_time - self.timer > self.moveTime:
-            if self.direction == 1:
-                max_move = self.rightMoves + self.rightAddMove
-            else:
-                max_move = self.leftMoves + self.leftAddMove
-
-            if self.moveNumber >= max_move:
-                self.leftMoves = 30 + self.rightAddMove
-                self.rightMoves = 30 + self.leftAddMove
-                self.direction *= -1
-                self.moveNumber = 0
-                self.bottom = 0
-                for enemy in self:
-                    enemy.rect.y += ENEMY_MOVE_DOWN
-                    enemy.toggle_image()
-                    if self.bottom < enemy.rect.y + 35:
-                        self.bottom = enemy.rect.y + 35
-            else:
-                velocity = 10 if self.direction == 1 else -10
-                for enemy in self:
-                    enemy.rect.x += velocity
-                    enemy.toggle_image()
-                self.moveNumber += 1
-
-            self.timer += self.moveTime
-
-    def add_internal(self, *sprites):
-        super(EnemiesGroup, self).add_internal(*sprites)
-        for s in sprites:
-            self.enemies[s.row][s.column] = s
-
-    def remove_internal(self, *sprites):
-        super(EnemiesGroup, self).remove_internal(*sprites)
-        for s in sprites:
-            self.kill(s)
-        self.update_speed()
-
-    def is_column_dead(self, column):
-        return not any(self.enemies[row][column] for row in range(self.rows))
-
-    def random_bottom(self):
-        col = choice(self._aliveColumns)
-        col_enemies = (self.enemies[row - 1][col] for row in range(self.rows, 0, -1))
-        return next((en for en in col_enemies if en is not None), None)
-
-    def update_speed(self):
-        if len(self) == 1:
-            self.moveTime = 200
-        elif len(self) <= 10:
-            self.moveTime = 400
-
-    def kill(self, enemy):
-        self.enemies[enemy.row][enemy.column] = None
-        is_column_dead = self.is_column_dead(enemy.column)
-        if is_column_dead:
-            self._aliveColumns.remove(enemy.column)
-
-        if enemy.column == self._rightAliveColumn:
-            while self._rightAliveColumn > 0 and is_column_dead:
-                self._rightAliveColumn -= 1
-                self.rightAddMove += 5
-                is_column_dead = self.is_column_dead(self._rightAliveColumn)
-
-        elif enemy.column == self._leftAliveColumn:
-            while self._leftAliveColumn < self.columns and is_column_dead:
-                self._leftAliveColumn += 1
-                self.leftAddMove += 5
-                is_column_dead = self.is_column_dead(self._leftAliveColumn)
-
-
-class Blocker(sprite.Sprite):
-    def __init__(self, size, color, row, column):
-        sprite.Sprite.__init__(self)
-        self.height = size
-        self.width = size
-        self.color = color
-        self.image = Surface((self.width, self.height))
-        self.image.fill(self.color)
-        self.rect = self.image.get_rect()
-        self.row = row
-        self.column = column
-
-    def update(self, keys, *args):
-        game.screen.blit(self.image, self.rect)
-
-
-class Mystery(sprite.Sprite):
-    def __init__(self):
-        sprite.Sprite.__init__(self)
-        self.image = IMAGES["mystery"]
-        self.image = transform.scale(self.image, (75, 35))
-        self.rect = self.image.get_rect(topleft=(-80, 45))
-        self.row = 5
-        self.moveTime = 25000
-        self.direction = 1
-        self.timer = time.get_ticks()
-        self.mysteryEntered = mixer.Sound(SOUND_PATH + f"mysteryentered.{SOUND_FORMAT}")
-        self.mysteryEntered.set_volume(0.3)
-        self.playSound = True
-
-    def update(self, keys, currentTime, *args):
-        resetTimer = False
-        passed = currentTime - self.timer
-        if passed > self.moveTime:
-            if (self.rect.x < 0 or self.rect.x > 800) and self.playSound:
-                self.mysteryEntered.play()
-                self.playSound = False
-            if self.rect.x < 840 and self.direction == 1:
-                self.mysteryEntered.fadeout(4000)
-                self.rect.x += 2
-                game.screen.blit(self.image, self.rect)
-            if self.rect.x > -100 and self.direction == -1:
-                self.mysteryEntered.fadeout(4000)
-                self.rect.x -= 2
-                game.screen.blit(self.image, self.rect)
-
-        if self.rect.x > 830:
-            self.playSound = True
-            self.direction = -1
-            resetTimer = True
-        if self.rect.x < -90:
-            self.playSound = True
-            self.direction = 1
-            resetTimer = True
-        if passed > self.moveTime and resetTimer:
-            self.timer = currentTime
-
-
-class EnemyExplosion(sprite.Sprite):
-    def __init__(self, enemy, *groups):
-        super(EnemyExplosion, self).__init__(*groups)
-        self.image = transform.scale(self.get_image(enemy.row), (40, 35))
-        self.image2 = transform.scale(self.get_image(enemy.row), (50, 45))
-        self.rect = self.image.get_rect(topleft=(enemy.rect.x, enemy.rect.y))
-        self.timer = time.get_ticks()
-
-    @staticmethod
-    def get_image(row):
-        img_colors = ["purple", "blue", "blue", "green", "green"]
-        return IMAGES["explosion{}".format(img_colors[row])]
-
-    def update(self, current_time, *args):
-        passed = current_time - self.timer
-        if passed <= 100:
-            game.screen.blit(self.image, self.rect)
-        elif passed <= 200:
-            game.screen.blit(self.image2, (self.rect.x - 6, self.rect.y - 6))
-        elif 400 < passed:
-            self.kill()
-
-
-class MysteryExplosion(sprite.Sprite):
-    def __init__(self, mystery, score, *groups):
-        super(MysteryExplosion, self).__init__(*groups)
-        self.text = Text(
-            FONT, 20, str(score), WHITE, mystery.rect.x + 20, mystery.rect.y + 6
-        )
-        self.timer = time.get_ticks()
-
-    def update(self, current_time, *args):
-        passed = current_time - self.timer
-        if passed <= 200 or 400 < passed <= 600:
-            self.text.draw(game.screen)
-        elif 600 < passed:
-            self.kill()
-
-
-class ShipExplosion(sprite.Sprite):
-    def __init__(self, ship, *groups):
-        super(ShipExplosion, self).__init__(*groups)
-        self.image = IMAGES["ship"]
-        self.rect = self.image.get_rect(topleft=(ship.rect.x, ship.rect.y))
-        self.timer = time.get_ticks()
-
-    def update(self, current_time, *args):
-        passed = current_time - self.timer
-        if 300 < passed <= 600:
-            game.screen.blit(self.image, self.rect)
-        elif 900 < passed:
-            self.kill()
-
-
-class Life(sprite.Sprite):
-    def __init__(self, xpos, ypos):
-        sprite.Sprite.__init__(self)
-        self.image = IMAGES["ship"]
-        self.image = transform.scale(self.image, (23, 23))
-        self.rect = self.image.get_rect(topleft=(xpos, ypos))
-
-    def update(self, *args):
-        game.screen.blit(self.image, self.rect)
-
-
-class Text(object):
-    def __init__(self, textFont, size, message, color, xpos, ypos):
-        self.font = font.Font(textFont, size)
-        self.surface = self.font.render(message, True, color)
-        self.rect = self.surface.get_rect(topleft=(xpos, ypos))
-
-    def draw(self, surface):
-        surface.blit(self.surface, self.rect)
-
-
-class SpaceInvaders(object):
-    def __init__(self):
-        # It seems, in Linux buffersize=512 is not enough, use 4096 to prevent:
-        #   ALSA lib pcm.c:7963:(snd_pcm_recover) underrun occurred
-        mixer.pre_init(44100, -16, 1, 4096)
-        init()
-        self.clock = time.Clock()
-        self.caption = display.set_caption("Space Invaders")
-        self.screen = SCREEN
-        self.background = image.load(IMAGE_PATH + "background.jpg").convert()
-        self.startGame = False
-        self.mainScreen = True
-        self.gameOver = False
-        # Counter for enemy starting position (increased each new round)
-        self.enemyPosition = ENEMY_DEFAULT_POSITION
-        self.titleText = Text(FONT, 50, "Space Invaders", WHITE, 164, 120)
-        self.titleText2 = Text(FONT, 25, "Press any key to continue", WHITE, 201, 205)
-        self.gameOverText = Text(FONT, 50, "Game Over", WHITE, 250, 270)
-        self.nextRoundText = Text(FONT, 50, "Next Round", WHITE, 240, 270)
-        self.enemy1Text = Text(FONT, 25, "   =   10 pts", GREEN, 368, 270)
-        self.enemy2Text = Text(FONT, 25, "   =  20 pts", BLUE, 368, 320)
-        self.enemy3Text = Text(FONT, 25, "   =  30 pts", PURPLE, 368, 370)
-        self.enemy4Text = Text(FONT, 25, "   =  ?????", RED, 368, 420)
-        self.scoreText = Text(FONT, 20, "Score", WHITE, 5, 5)
-        self.livesText = Text(FONT, 20, "Lives ", WHITE, 640, 5)
+    heart_full_image = pygame.image.load("images/heart_full.png").convert_alpha()
+    heart_full_image = pygame.transform.scale(heart_full_image, (24, 19))
+    heart_empty_image = pygame.image.load("images/heart_empty.png").convert_alpha() 
+    heart_empty_image = pygame.transform.scale(heart_empty_image, (24, 19))
+    lightning_image = pygame.image.load("images/lightning.png").convert_alpha()
+    lightning_image = pygame.transform.scale(lightning_image, (24, 19))
+    nuclear_image = pygame.image.load("images/nuclear.png").convert_alpha()
+    nuclear_image = pygame.transform.scale(nuclear_image, (24, 19))   
+    
+    explosion_images = pygame.image.load("images/explosion_spritesheet.png").convert_alpha()
+    # 64 images divided in an 8x6 grid, each 100x100 pixels in the original spritesheet
+    explosion_frames = []
+    for i in range(6):
+        for j in range(8):
+            frame = explosion_images.subsurface((30+j*100, 30+i*100, 100, 100))
+            explosion_frames.append(pygame.transform.scale(frame, (50, 50)))
         
-        self.creator_name = Text(FONT, 20, "Sandy Inspires", GREEN, 600, 570)
-        self.jtl = Text(FONT, 20, "THE LEAGUE", ORANGE, 10, 570)
+    # Key states and invincibility
+    K_DOWN_PRESSED = K_UP_PRESSED = K_LEFT_PRESSED = K_RIGHT_PRESSED = K_w_PRESSED = K_e_PRESSED = K_q_PRESSED = False
 
-        self.life1 = Life(715, 3)
-        self.life2 = Life(742, 3)
-        self.life3 = Life(769, 3)
-        self.livesGroup = sprite.Group(self.life1, self.life2, self.life3)
+    boost = None
+    game_stopped = True
+    game_over = False
+    explosion = []
+    name = None
+    name_text = ""
+    # Fallback for menu Enter handling (useful when browser canvas lacks keyboard focus)
+    menu_return_pressed = False
 
-    def reset(self, score):
-        self.player = Ship()
-        self.playerGroup = sprite.Group(self.player)
-        self.explosionsGroup = sprite.Group()
-        self.bullets = sprite.Group()
-        self.mysteryShip = Mystery()
-        self.mysteryGroup = sprite.Group(self.mysteryShip)
-        self.enemyBullets = sprite.Group()
-        self.make_enemies()
-        self.allSprites = sprite.Group(
-            self.player, self.enemies, self.livesGroup, self.mysteryShip
-        )
-        self.keys = key.get_pressed()
+    # Game loop
+    running = True
+    while running:
+        # Cap frame rate and get time delta in seconds (dt)
+        dt = clock.tick(60) / 1000.0
 
-        self.timer = time.get_ticks()
-        self.noteTimer = time.get_ticks()
-        self.shipTimer = time.get_ticks()
-        self.score = score
-        self.create_audio()
-        self.makeNewShip = False
-        self.shipAlive = True
+        if game_stopped == False:
+            # if the user closes the window
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    running = False
 
-    def make_blockers(self, number):
-        blockerGroup = sprite.Group()
-        for row in range(4):
-            for column in range(9):
-                blocker = Blocker(10, GREEN, row, column)
-                blocker.rect.x = 50 + (200 * number) + (column * blocker.width)
-                blocker.rect.y = BLOCKERS_POSITION + (row * blocker.height)
-                blockerGroup.add(blocker)
-        return blockerGroup
+                # if the user presses a key
+                if event.type == KEYDOWN:  
+                    if event.key == K_LEFT: K_LEFT_PRESSED = True
+                    elif event.key == K_RIGHT: K_RIGHT_PRESSED = True
+                    elif event.key == K_UP: K_UP_PRESSED = True
+                    elif event.key == K_DOWN: K_DOWN_PRESSED = True
+                    elif event.key == K_ESCAPE:  
+                        # Request quit and try a safe shutdown of audio/display to avoid hangs
+                        running = False
+                        try:
+                            pygame.mixer.music.stop()
+                        except Exception as _:
+                            pass
+                        try:
+                            pygame.mixer.quit()
+                        except Exception as _:
+                            pass
+                        try:
+                            pygame.display.quit()
+                        except Exception as _:
+                            pass
+                    elif event.key == K_w:
+                        if not K_w_PRESSED:
+                            g.missiles.append([g.spaceship_coord_x, g.spaceship_coord_y])
+                            if son_blaster:
+                                s = son_blaster[random.randint(0, len(son_blaster)-1)]
+                                if s:
+                                    s.play()
+                        K_w_PRESSED = True
+                    elif event.key == K_e:
+                        if not K_e_PRESSED:
+                            if g.boosts > 0:
+                                g.boosts -= 1
+                                boost = pygame.time.get_ticks()
+                                if son_boost:
+                                    son_boost.play()
+                        K_e_PRESSED = True
+                    elif event.key == K_q:
+                        if not K_q_PRESSED:
+                            if g.nuclear_bombs > 0:
+                                g.nuclear_bombs -= 1
+                                g.nuclear.append([g.spaceship_coord_x, g.spaceship_coord_y, 0])
+                                if son_nuclear:
+                                    son_nuclear.play()
+                        K_q_PRESSED = True
 
-    def create_audio(self):
-        self.sounds = {}
-        for sound_name in [
-            "shoot",
-            "shoot2",
-            "invaderkilled",
-            "mysterykilled",
-            "shipexplosion",
-        ]:
-            self.sounds[sound_name] = mixer.Sound(
-                SOUND_PATH + "{}.{}".format(sound_name, SOUND_FORMAT)
-            )
-            self.sounds[sound_name].set_volume(0.2)
+                # if the user releases a key    
+                if event.type == KEYUP: 
+                    if event.key == K_w: K_w_PRESSED = False
+                    elif event.key == K_e: K_e_PRESSED = False
+                    elif event.key == K_q: K_q_PRESSED = False
+                    elif event.key == K_LEFT: K_LEFT_PRESSED = False
+                    elif event.key == K_RIGHT: K_RIGHT_PRESSED = False 
+                    elif event.key == K_UP: K_UP_PRESSED = False
+                    elif event.key == K_DOWN: K_DOWN_PRESSED = False
 
-        self.musicNotes = [
-            mixer.Sound(SOUND_PATH + "{}.{}".format(i, SOUND_FORMAT)) for i in range(4)
-        ]
-        for sound in self.musicNotes:
-            sound.set_volume(0.5)
-
-        self.noteIndex = 0
-
-    def play_main_music(self, currentTime):
-        if currentTime - self.noteTimer > self.enemies.moveTime:
-            self.note = self.musicNotes[self.noteIndex]
-            if self.noteIndex < 3:
-                self.noteIndex += 1
+            # Update spaceship position based on key states (time-based)
+            if boost != None:
+                my_speed = g.SPACESHIP_SPEED * 2
             else:
-                self.noteIndex = 0
+                my_speed = g.SPACESHIP_SPEED
+            if K_LEFT_PRESSED:  
+                g.spaceship_coord_x -= my_speed * dt
+                g.spaceship_coord_x = max(img_spaceship_width//2, g.spaceship_coord_x)
+            if K_RIGHT_PRESSED:  
+                g.spaceship_coord_x += my_speed * dt
+                g.spaceship_coord_x = min(screen_width - img_spaceship_width//2, g.spaceship_coord_x)
+            if K_UP_PRESSED: 
+                g.spaceship_coord_y -= my_speed * dt
+                g.spaceship_coord_y = max(img_spaceship_height//2, g.spaceship_coord_y)
+            if K_DOWN_PRESSED: 
+                g.spaceship_coord_y += my_speed * dt
+                g.spaceship_coord_y = min(screen_height - img_spaceship_height//2, g.spaceship_coord_y) 
 
-            self.note.play()
-            self.noteTimer += self.enemies.moveTime
+            # Update missile positions (time-based)
+            for m in g.missiles:
+                m[1] -= g.SPEED_MISSILE * dt
+                if m[1] < 0:
+                    g.missiles.remove(m)
+            
+            # Update nuclear bomb positions (time-based radius growth)
+            for n in g.nuclear:
+                n[2] += g.SPEED_NUCLEAR * dt
+                if n[2] > g.NUCLEAR_MAX_RADIUS:
+                    g.nuclear.remove(n)
 
-    @staticmethod
-    def should_exit(evt):
-        # type: (pygame.event.EventType) -> bool
-        return evt.type == QUIT or (evt.type == KEYUP and evt.key == K_ESCAPE)
+            # Spawn enemies
+            current_time = pygame.time.get_ticks()
+            if current_time - g.time_last_enemy > g.ENEMIES_FREQUENCY / g.spawn_ratio:
+                enemy_x = random.randint(img_enemy_width//2, screen_width - img_enemy_width//2)
+                enemy_y = random.randint(img_enemy_height//2, screen_height- img_spaceship_height - img_enemy_height - 10)
+                enemy_type = random.randint(0, len(img_enemy) - 1)
+                g.enemies.append([enemy_x, enemy_y, enemy_type, []])
+                g.time_last_enemy = current_time
 
-    def check_input(self):
-        self.keys = key.get_pressed()
-        for e in event.get():
-            if self.should_exit(e):
-                sys.exit()
-            if e.type == KEYDOWN:
-                if e.key == K_SPACE:
-                    if len(self.bullets) == 0 and self.shipAlive:
-                        if self.score <= 100:
-                            bullet = Bullet(
-                                self.player.rect.x + 23,
-                                self.player.rect.y + 5,
-                                -1,
-                                15,
-                                "laser",
-                                "center",
-                            )
-                            self.bullets.add(bullet)
-                            self.allSprites.add(self.bullets)
-                            self.sounds["shoot"].play()
-                        elif self.score > 100 and self.score <= 200:
-                            leftbullet = Bullet(
-                                self.player.rect.x + 8,
-                                self.player.rect.y + 5,
-                                -1,
-                                15,
-                                "laser",
-                                "left",
-                            )
-                            right_bullet = Bullet(
-                                self.player.rect.x + 38,
-                                self.player.rect.y + 5,
-                                -1,
-                                15,
-                                "laser",
-                                "right",
-                            )
-                            self.bullets.add(leftbullet)
-                            self.bullets.add(right_bullet)
-                            self.allSprites.add(self.bullets)
-                            self.sounds["shoot2"].play()
+            # Update enemy positions (time-based)
+            for e in g.enemies:
+                e[0] += random.uniform(-g.SPEED_ENEMIES, g.SPEED_ENEMIES) * dt
+                e[1] += random.uniform(-g.SPEED_ENEMIES, g.SPEED_ENEMIES) * dt
+                e[0] = max(img_enemy_width//2, min(screen_width - img_enemy_width//2, e[0]))
+                e[1] = max(img_enemy_height//2, min(screen_height - img_enemy_height//2, e[1]))
 
-                        else:
-                            left_bullet = Bullet(
-                                self.player.rect.x + 8,
-                                self.player.rect.y + 5,
-                                -1,
-                                15,
-                                "laser",
-                                "left",
-                            )
-                            right_bullet = Bullet(
-                                self.player.rect.x + 38,
-                                self.player.rect.y + 5,
-                                -1,
-                                15,
-                                "laser",
-                                "right",
-                            )
-                            center_bullet = Bullet(
-                                self.player.rect.x + 23,
-                                self.player.rect.y + 5,
-                                -1,
-                                15,
-                                "laser",
-                                "center",
-                            )
-                            self.bullets.add(left_bullet)
-                            self.bullets.add(center_bullet)
-                            self.bullets.add(right_bullet)
-                            self.allSprites.add(self.bullets)
-                            self.sounds["shoot2"].play()
+            # spawn enemy bullets/balls (probabilities scaled with dt)
+            for e in g.enemies:
+                if random.random() < g.ENEMIES_MISSILES_PROBABILITY * dt:
+                    direction_x = g.spaceship_coord_x - e[0]
+                    direction_y = g.spaceship_coord_y - e[1]
+                    length = (direction_x**2 + direction_y**2) ** 0.5
+                    if length != 0:
+                        g.enemies_missiles.append([e[0], e[1] + img_enemy_height//2, 1, [direction_x/length, direction_y/length]])  # bullet
+                if random.random() < g.ENEMIES_BALLS_PROBABILITY * dt:
+                    g.enemies_missiles.append([e[0], e[1] + img_enemy_height//2, 2, [], pygame.time.get_ticks()])  # ball
 
-    def make_enemies(self):
-        enemies = EnemiesGroup(10, 5)
-        for row in range(5):
-            for column in range(10):
-                enemy = Enemy(row, column)
-                enemy.rect.x = 157 + (column * 50)
-                enemy.rect.y = self.enemyPosition + (row * 45)
-                enemies.add(enemy)
+            # Update enemy bullet/balls positions (time-based)
+            for em in g.enemies_missiles:            
+                if em[2] == 1:  # bullet
+                    em[0] += em[3][0] * g.ENEMY_BULLET_SPEED * dt
+                    em[1] += em[3][1] * g.ENEMY_BULLET_SPEED * dt
+                    if em[0] < 0 or em[0] > screen_width or em[1] < 0 or em[1] > screen_height:
+                        g.enemies_missiles.remove(em)
+                elif em[2] == 2:  # ball
+                    if pygame.time.get_ticks() - em[4] > g.BALLS_DURATION:
+                        g.enemies_missiles.remove(em)
+                    else:
+                        direction_x = g.spaceship_coord_x - em[0]
+                        direction_y = g.spaceship_coord_y - em[1]
+                        length = (direction_x**2 + direction_y**2) ** 0.5
+                        if length != 0:
+                            direction_x /= length
+                            direction_y /= length
+                        em[0] += direction_x * g.ENEMY_BALLS_SPEED * dt
+                        em[1] += direction_y * g.ENEMY_BALLS_SPEED * dt
+                        if em[0] < 0 or em[0] > screen_width or em[1] < 0 or em[1] > screen_height:
+                            g.enemies_missiles.remove(em)
 
-        self.enemies = enemies
+            # check for missile-enemy collisions
+            for m in g.missiles:
+                for e in g.enemies:
+                    if (e[0] - img_enemy_width//2 < m[0] < e[0] + img_enemy_width//2) and (e[1] - img_enemy_height//2 < m[1] < e[1] + img_enemy_height//2):
+                        g.enemies.remove(e)
+                        g.missiles.remove(m)
+                        g.score += 1
+                        if son_explosion:
+                            son_explosion.play()
+                        explosion.append([e[0] - 32, e[1] - 32, 0, pygame.time.get_ticks()])  
+                        # spawn bonus with certain probability
+                        if random.random() < g.BONUS_PROBABILITY:
+                            bonus_type = random.choice(["life", "boost", "nuclear"])
+                            g.bonus.append([e[0], e[1], bonus_type, pygame.time.get_ticks()])
+                        break
+            
+            # check for nuclear bomb-enemy collisions
+            for n in g.nuclear: 
+                for e in g.enemies:
+                    distance = ((e[0] - n[0])**2 + (e[1] - n[1])**2) ** 0.5
+                    if distance < n[2]:
+                        g.enemies.remove(e)
+                        g.score += 1
+                        if son_explosion:
+                            son_explosion.play()
+                        explosion.append([e[0] - 32, e[1] - 32, 0, pygame.time.get_ticks()])  
 
-    def make_enemies_shoot(self):
-        if (time.get_ticks() - self.timer) > 700 and self.enemies:
-            enemy = self.enemies.random_bottom()
-            self.enemyBullets.add(
-                Bullet(
-                    enemy.rect.x + 14, enemy.rect.y + 20, 1, 5, "enemylaser", "center"
-                )
-            )
-            self.allSprites.add(self.enemyBullets)
-            self.timer = time.get_ticks()
+            # check for bonus-spaceship collisions
+            for b in g.bonus:
+                if (g.spaceship_coord_x - img_spaceship_width//2 < b[0] < g.spaceship_coord_x + img_spaceship_width//2) and (g.spaceship_coord_y - img_spaceship_height//2 < b[1] < g.spaceship_coord_y + img_spaceship_height//2):
+                    if b[2] == "life":
+                        if g.lives < g.MAX_LIVES:
+                            g.lives += 1
+                    elif b[2] == "boost":
+                        g.boosts += 1
+                    elif b[2] == "nuclear":
+                        g.nuclear_bombs += 1
+                    g.bonus.remove(b)
+                    break
 
-    def calculate_score(self, row):
-        scores = {0: 30, 1: 20, 2: 20, 3: 10, 4: 10, 5: choice([50, 100, 150, 300])}
+            # check for bonus expiration
+            for b in g.bonus:
+                if pygame.time.get_ticks() - b[3] > g.BONUS_DURATION:
+                    g.bonus.remove(b)
 
-        score = scores[row]
-        self.score += score
-        return score
+            if g.invicibility == None:
+                # check for enemy-spaceship collisions
+                for e in g.enemies:
+                    if (g.spaceship_coord_x - img_spaceship_width//2 < e[0] < g.spaceship_coord_x + img_spaceship_width//2) and (g.spaceship_coord_y - img_spaceship_height//2 < e[1] < g.spaceship_coord_y + img_spaceship_height//2):
+                        g.enemies.remove(e)
+                        g.lives -= 1
+                        if son_explosion:
+                            son_explosion.play()
+                        g.invicibility = pygame.time.get_ticks()
+                        break
 
-    def create_main_menu(self):
-        self.enemy1 = IMAGES["enemy3_1"]
-        self.enemy1 = transform.scale(self.enemy1, (40, 40))
-        self.enemy2 = IMAGES["enemy2_2"]
-        self.enemy2 = transform.scale(self.enemy2, (40, 40))
-        self.enemy3 = IMAGES["enemy1_2"]
-        self.enemy3 = transform.scale(self.enemy3, (40, 40))
-        self.enemy4 = IMAGES["mystery"]
-        self.enemy4 = transform.scale(self.enemy4, (80, 40))
-        self.screen.blit(self.enemy1, (318, 270))
-        self.screen.blit(self.enemy2, (318, 320))
-        self.screen.blit(self.enemy3, (318, 370))
-        self.screen.blit(self.enemy4, (299, 420))
-
-    def check_collisions(self):
-        sprite.groupcollide(self.bullets, self.enemyBullets, True, True)
-
-        for enemy in sprite.groupcollide(self.enemies, self.bullets, True, True).keys():
-            self.sounds["invaderkilled"].play()
-            self.calculate_score(enemy.row)
-            EnemyExplosion(enemy, self.explosionsGroup)
-            self.gameTimer = time.get_ticks()
-
-        for mystery in sprite.groupcollide(
-            self.mysteryGroup, self.bullets, True, True
-        ).keys():
-            mystery.mysteryEntered.stop()
-            self.sounds["mysterykilled"].play()
-            score = self.calculate_score(mystery.row)
-            MysteryExplosion(mystery, score, self.explosionsGroup)
-            newShip = Mystery()
-            self.allSprites.add(newShip)
-            self.mysteryGroup.add(newShip)
-
-        for player in sprite.groupcollide(
-            self.playerGroup, self.enemyBullets, True, True
-        ).keys():
-            if self.life3.alive():
-                self.life3.kill()
-            elif self.life2.alive():
-                self.life2.kill()
-            elif self.life1.alive():
-                self.life1.kill()
+                # check for enemy bullet/ball - spaceship collisions
+                for em in g.enemies_missiles:   
+                    if (g.spaceship_coord_x - img_spaceship_width//2 < em[0] < g.spaceship_coord_x + img_spaceship_width//2) and (g.spaceship_coord_y - img_spaceship_height//2 < em[1] < g.spaceship_coord_y + img_spaceship_height//2):
+                        g.enemies_missiles.remove(em)
+                        g.lives -= 1
+                        if son_explosion:
+                            son_explosion.play()
+                        g.invicibility = pygame.time.get_ticks()
+                        break
+                if g.lives <= 0:
+                    game_over, game_stopped = True, True   
+                    update_leaderboard(g.score, leaderboard, name)
             else:
-                self.gameOver = True
-                self.startGame = False
-            self.sounds["shipexplosion"].play()
-            ShipExplosion(player, self.explosionsGroup)
-            self.makeNewShip = True
-            self.shipTimer = time.get_ticks()
-            self.shipAlive = False
+                if pygame.time.get_ticks() - g.invicibility > g.INVICIBILITY_DURATION:
+                    g.invicibility = None
+            if boost != None:
+                if pygame.time.get_ticks() - boost > g.BOOST_DURATION:
+                    boost = None
 
-        if self.enemies.bottom >= 540:
-            sprite.groupcollide(self.enemies, self.playerGroup, True, True)
-            if not self.player.alive() or self.enemies.bottom >= 600:
-                self.gameOver = True
-                self.startGame = False
+            # increase spawn ratio over time to make game harder
+            g.spawn_ratio += 0.01 * dt
 
-        sprite.groupcollide(self.bullets, self.allBlockers, True, True)
-        sprite.groupcollide(self.enemyBullets, self.allBlockers, True, True)
-        if self.enemies.bottom >= BLOCKERS_POSITION:
-            sprite.groupcollide(self.enemies, self.allBlockers, False, True)
+            # Draw everything
+            screen.blit(img_background, (0, 0))
+            
+            if g.invicibility == None:
+                screen.blit(img_spaceship, (g.spaceship_coord_x - img_spaceship_width//2, g.spaceship_coord_y - img_spaceship_height//2))
+            else:
+                if (pygame.time.get_ticks() // 200) % 2 == 0:
+                    screen.blit(img_spaceship, (g.spaceship_coord_x - img_spaceship_width//2, g.spaceship_coord_y - img_spaceship_height//2))
+            
+            for e in g.enemies:
+                screen.blit(img_enemy[e[2]], (e[0] - img_enemy_width//2, e[1] - img_enemy_height//2))
+            
+            for em in g.enemies_missiles:  
+                if em[2] == 1:  # bullet
+                    pygame.draw.line(screen, (0, 255, 0), (em[0], em[1]), (em[0] + em[3][0]*10, em[1] + em[3][1]*10), 3)
+                elif em[2] == 2:  # ball
+                    pygame.draw.circle(screen, (0, 0, 255), (int(em[0]), int(em[1])), 5)
 
-    def create_new_ship(self, createShip, currentTime):
-        if createShip and (currentTime - self.shipTimer > 900):
-            self.player = Ship()
-            self.allSprites.add(self.player)
-            self.playerGroup.add(self.player)
-            self.makeNewShip = False
-            self.shipAlive = True
+            for m in g.missiles:
+                pygame.draw.line(screen, (255, 127, 80), (m[0], m[1]), (m[0], m[1] + 10), 3)
+            
+            for n in g.nuclear:
+                pygame.draw.circle(screen, (255, 255, 0), (int(n[0]), int(n[1])), int(n[2]), 2)
 
-    def create_game_over(self, currentTime):
-        self.screen.blit(self.background, (0, 0))
-        passed = currentTime - self.timer
-        if passed < 750:
-            self.gameOverText.draw(self.screen)
-        elif 750 < passed < 1500:
-            self.screen.blit(self.background, (0, 0))
-        elif 1500 < passed < 2250:
-            self.gameOverText.draw(self.screen)
-        elif 2250 < passed < 2750:
-            self.screen.blit(self.background, (0, 0))
-        elif passed > 3000:
-            self.mainScreen = True
+            # Display bonus
+            for b in g.bonus:
+                if b[2] == "life":
+                    screen.blit(heart_full_image, (b[0] - 12, b[1] - 10))
+                elif b[2] == "boost":
+                    screen.blit(lightning_image, (b[0] - 12, b[1] - 10))
+                elif b[2] == "nuclear":
+                    screen.blit(nuclear_image, (b[0] - 12, b[1] - 10))
 
-        for e in event.get():
-            if self.should_exit(e):
-                sys.exit()
-
-    async def main(self):
-        while True:
-            if self.mainScreen:
-                self.screen.blit(self.background, (0, 0))
-                self.titleText.draw(self.screen)
-                self.titleText2.draw(self.screen)
-                self.enemy1Text.draw(self.screen)
-                self.enemy2Text.draw(self.screen)
-                self.enemy3Text.draw(self.screen)
-                self.enemy4Text.draw(self.screen)
-                self.creator_name.draw(self.screen)
-                self.jtl.draw(self.screen)
-                self.create_main_menu()
-                for e in event.get():
-                    if self.should_exit(e):
-                        sys.exit()
-                    if e.type == KEYUP:
-                        # Only create blockers on a new game, not a new round
-                        self.allBlockers = sprite.Group(
-                            self.make_blockers(0),
-                            self.make_blockers(1),
-                            self.make_blockers(2),
-                            self.make_blockers(3),
-                        )
-                        self.livesGroup.add(self.life1, self.life2, self.life3)
-                        self.reset(0)
-                        self.startGame = True
-                        self.mainScreen = False
-
-            elif self.startGame:
-                if not self.enemies and not self.explosionsGroup:
-                    currentTime = time.get_ticks()
-                    if currentTime - self.gameTimer < 3000:
-                        self.screen.blit(self.background, (0, 0))
-                        self.scoreText2 = Text(FONT, 20, str(self.score), GREEN, 85, 5)
-                        self.scoreText.draw(self.screen)
-                        self.scoreText2.draw(self.screen)
-                        self.nextRoundText.draw(self.screen)
-                        self.livesText.draw(self.screen)
-                        self.livesGroup.update()
-                        self.check_input()
-                        self.creator_name.draw(self.screen)
-                        self.jtl.draw(self.screen)
-                    if currentTime - self.gameTimer > 3000:
-                        # Move enemies closer to bottom
-                        self.enemyPosition += ENEMY_MOVE_DOWN
-                        self.reset(self.score)
-                        self.gameTimer += 3000
+            # Display score
+            score_text = font.render(f"Score: {g.score}", True, (255, 255, 255))
+            screen.blit(score_text, (10, 10))
+            record_score_text = font.render(f"Record: {max(int(leaderboard[0][0]), g.score)}", True, (255, 255, 255))
+            screen.blit(record_score_text, (10, 50))
+            
+            # display lives as heart images on the right
+            for i in range(g.MAX_LIVES):
+                if i < g.lives:
+                    screen.blit(heart_full_image, (750 - i*30, 10))
                 else:
-                    currentTime = time.get_ticks()
-                    self.play_main_music(currentTime)
-                    self.screen.blit(self.background, (0, 0))
-                    self.allBlockers.update(self.screen)
-                    self.scoreText2 = Text(FONT, 20, str(self.score), GREEN, 85, 5)
-                    self.scoreText.draw(self.screen)
-                    self.scoreText2.draw(self.screen)
-                    self.livesText.draw(self.screen)
-                    self.check_input()
-                    self.enemies.update(currentTime)
-                    self.allSprites.update(self.keys, currentTime)
-                    self.explosionsGroup.update(currentTime)
-                    self.check_collisions()
-                    self.create_new_ship(self.makeNewShip, currentTime)
-                    self.make_enemies_shoot()
-                    self.creator_name.draw(self.screen)
-                    self.jtl.draw(self.screen)
+                    screen.blit(heart_empty_image, (750 - i*30, 10))
+            
+            # display boosts as lightning on the right
+            for i in range(g.boosts):
+                screen.blit(lightning_image, (750 - i*30, 40))
 
-            elif self.gameOver:
-                currentTime = time.get_ticks()
-                # Reset enemy starting position
-                self.enemyPosition = ENEMY_DEFAULT_POSITION
-                self.create_game_over(currentTime)
+            # display nuclear bombs as nuclear sign on the right
+            for i in range(g.nuclear_bombs):
+                screen.blit(nuclear_image, (750 - i*30, 70))
+                
+            # display explosions
+            for ex in explosion:
+                frame_index = (pygame.time.get_ticks() - ex[3]) // 5
+                if frame_index < len(explosion_frames):
+                    screen.blit(explosion_frames[frame_index], (ex[0], ex[1]))
+                else:
+                    explosion.remove(ex)
 
-            display.update()
-            self.clock.tick(60)
-            await asyncio.sleep(0)
+            # Update the display
+            pygame.display.flip()
+    
+        elif name != None:
+            # Game is stopped, wait for user input to restart or quit
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    running = False
+                if event.type == KEYDOWN:
+                    if event.key == K_RETURN:
+                        g = GAME(screen, img_spaceship_height)
+                        game_stopped = False
+                        game_over = False
+                        K_DOWN_PRESSED = K_UP_PRESSED = K_LEFT_PRESSED = K_RIGHT_PRESSED = K_w_PRESSED = K_e_PRESSED = K_q_PRESSED = False
+                    elif event.key == K_ESCAPE:
+                        # Request quit from menu and attempt safe shutdown
+                        running = False
+                        try:
+                            pygame.mixer.music.stop()
+                        except Exception:
+                            pass
+                        try:
+                            pygame.mixer.quit()
+                        except Exception:
+                            pass
+                        try:
+                            pygame.display.quit()
+                        except Exception:
+                            pass
 
+            # Fallback: poll the key state for K_RETURN (and ESC) — helps when the canvas doesn't have focus in the browser
+            keys = pygame.key.get_pressed()
+            if keys[K_RETURN] and not menu_return_pressed:
+                g = GAME(screen, img_spaceship_height)
+                game_stopped = False
+                game_over = False
+                K_DOWN_PRESSED = K_UP_PRESSED = K_LEFT_PRESSED = K_RIGHT_PRESSED = K_w_PRESSED = K_e_PRESSED = K_q_PRESSED = False
+                menu_return_pressed = True
+            elif not keys[K_RETURN]:
+                menu_return_pressed = False
 
-if __name__ == "__main__":
-    game = SpaceInvaders()
-    asyncio.run(game.main())
+            # Poll ESC as fallback to quit
+            if keys[K_ESCAPE]:
+                running = False
+                try:
+                    pygame.mixer.music.stop()
+                except Exception:
+                    pass
+                try:
+                    pygame.mixer.quit()
+                except Exception:
+                    pass
+                try:
+                    pygame.display.quit()
+                except Exception:
+                    pass
+
+            if game_over == False:
+                display_menu(screen, font, font_small, screen_width, screen_height, img_background, leaderboard)
+            else:
+                display_menu(screen, font, font_small, screen_width, screen_height, img_background, leaderboard, score=g.score)
+        else:
+            # Game is stopped, wait for user input to type his name
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    running = False
+                if event.type == KEYDOWN:
+                    if event.key == K_RETURN:
+                        if name_text.strip() != "":
+                            name = name_text
+                        else:
+                            name = "Anonymous"
+                        name_text = ""
+                    elif event.key == K_BACKSPACE:
+                        name_text = name_text[:-1]
+                    else:
+                        name_text += event.unicode
+
+            display_namebox(screen, font, font_small, screen_width, screen_height, img_background, name_text)
+
+        await asyncio.sleep(0)
+
+    # Quit Pygame
+    if 'pygbag' not in sys.modules:
+        pygame.quit()
+
+asyncio.run(main())
